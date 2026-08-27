@@ -1,0 +1,111 @@
+# In-cluster builds, for when pushing an image from outside is not an option.
+#
+#   oc process -f deploy/openshift/buildconfigs.yaml \
+#     -p GIT_URI=https://github.com/<you>/jmeter-vs-ghz -p GIT_REF=main | oc apply -f -
+#   oc start-build benchmark-sut --follow
+#   oc start-build benchmark-loadgen --follow
+#
+# In the web console this is one paste into **Import YAML**, then **Start build**
+# on each BuildConfig. See docs/OPENSHIFT.md.
+#
+# Two things have to be true for this to work, and neither is true everywhere:
+#
+#   * your namespace may use the Docker build strategy — some clusters restrict
+#     it, and the build then fails with a forbidden error naming
+#     `system:build-strategy-docker`;
+#   * the cluster's builds can reach github.com, proxy.golang.org,
+#     repo.maven.apache.org and archive.apache.org, because that is where ghz,
+#     the JMeter plugin and JMeter itself come from.
+#
+# If either fails, build on your own machine and push the image instead. That
+# path has no cluster-side dependencies at all.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: benchmark-builds
+  annotations:
+    description: ImageStreams and Docker-strategy BuildConfigs for both benchmark images
+parameters:
+  - name: GIT_URI
+    description: Repository holding this benchmark
+    value: https://github.com/ridvanozcan91/jmeter-vs-ghz
+  - name: GIT_REF
+    description: Branch or tag to build
+    value: main
+objects:
+  - apiVersion: image.openshift.io/v1
+    kind: ImageStream
+    metadata:
+      name: benchmark-sut
+      labels:
+        app: benchmark-sut
+    spec:
+      lookupPolicy:
+        local: true
+  - apiVersion: image.openshift.io/v1
+    kind: ImageStream
+    metadata:
+      name: benchmark-loadgen
+      labels:
+        app: benchmark-loadgen
+    spec:
+      lookupPolicy:
+        local: true
+  - apiVersion: build.openshift.io/v1
+    kind: BuildConfig
+    metadata:
+      name: benchmark-sut
+      labels:
+        app: benchmark-sut
+    spec:
+      source:
+        type: Git
+        git:
+          uri: ${GIT_URI}
+          ref: ${GIT_REF}
+      strategy:
+        type: Docker
+        dockerStrategy:
+          # The build context is the repository root: the Dockerfile copies both
+          # proto/ and sut/, and a narrower context would leave the proto
+          # contract out of the image that has to serve it.
+          dockerfilePath: deploy/sut.Dockerfile
+      output:
+        to:
+          kind: ImageStreamTag
+          name: benchmark-sut:latest
+      resources:
+        limits:
+          cpu: "2"
+          memory: 4Gi
+  - apiVersion: build.openshift.io/v1
+    kind: BuildConfig
+    metadata:
+      name: benchmark-loadgen
+      labels:
+        app: benchmark-loadgen
+    spec:
+      source:
+        type: Git
+        git:
+          uri: ${GIT_URI}
+          ref: ${GIT_REF}
+      strategy:
+        type: Docker
+        dockerStrategy:
+          dockerfilePath: deploy/loadgen.Dockerfile
+          buildArgs:
+            # Recorded in every run manifest. A container has no git checkout,
+            # so this is what ties a set of numbers back to its source.
+            - name: GIT_COMMIT
+              value: ${GIT_REF}
+      output:
+        to:
+          kind: ImageStreamTag
+          name: benchmark-loadgen:latest
+      resources:
+        # This build compiles ghz and the JMeter plugin and downloads JMeter.
+        # A smaller memory limit is where it gets OOMKilled.
+        limits:
+          cpu: "2"
+          memory: 6Gi

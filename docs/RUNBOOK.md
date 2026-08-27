@@ -150,10 +150,12 @@ node names and the cgroup throttling counters for every run, and the report
 refuses to present a run as authoritative when the pods shared a node or the
 load generator hit its quota.
 
-> The images and manifests have **not been built or applied** from this
-> repository's development environment, which has neither a container engine nor
-> a cluster. The native two-machine path above is the one that has been
-> exercised; the OpenShift path has a preflight section for exactly that reason.
+> Both images have been built and the smoke matrix has run between two
+> containers as an arbitrary UID, which is what the restricted SCC imposes.
+> Nothing cluster-side — templates, RBAC, anti-affinity, the claim — has been
+> applied from this repository's development environment, which has no cluster.
+> See `deploy/README.md` for exactly what was and was not exercised, and run the
+> preflight in OPENSHIFT.md before a long run.
 
 ## Single-host runs
 

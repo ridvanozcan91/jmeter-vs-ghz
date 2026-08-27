@@ -23,6 +23,12 @@ that recent.
 > the CPU limits, and the interquartile range visible. The "sanity checks"
 > section below is what tells you whether a given run cleared that bar.
 
+> **Status.** Both images have been built and run, and the smoke matrix has
+> completed between two containers running as an arbitrary UID in group 0 — the
+> condition the restricted SCC imposes. The cluster-side objects here have not
+> been applied anywhere; `deploy/README.md` records the split precisely. The
+> preflight in step 3 is the five minutes that turn that into your own evidence.
+
 ## 0. What your namespace actually allows
 
 Check before building anything; these four commands decide the shape of the run.
@@ -107,18 +113,22 @@ skopeo inspect --format '{{.Digest}}' docker://registry.corp.example/team/benchm
 <details>
 <summary>Alternative: build inside the cluster</summary>
 
-If you cannot push images but can create BuildConfigs, OpenShift can build from
-a local directory. This only works if your cluster's builds have egress to the
-public artifact repositories listed above.
+If you cannot push images but can create BuildConfigs, the cluster can build
+from your git repository. `deploy/openshift/buildconfigs.yaml` holds an
+ImageStream and a Docker-strategy BuildConfig for each image:
 
 ```bash
-oc new-build --name benchmark-loadgen --binary --strategy=docker
-oc patch bc/benchmark-loadgen --type=json -p \
-  '[{"op":"add","path":"/spec/strategy/dockerStrategy/dockerfilePath","value":"deploy/loadgen.Dockerfile"}]'
-oc start-build benchmark-loadgen --from-dir=. --follow
+oc process -f deploy/openshift/buildconfigs.yaml \
+  -p GIT_URI=https://github.com/<you>/jmeter-vs-ghz -p GIT_REF=main | oc apply -f -
+oc start-build benchmark-sut --follow
+oc start-build benchmark-loadgen --follow
 ```
 
-The resulting ImageStream tag is usable directly as `IMAGE`.
+Two conditions have to hold: your namespace may use the Docker build strategy
+(some clusters restrict it, and the failure names `system:build-strategy-docker`),
+and the cluster's builds can reach the artifact repositories listed above. The
+resulting `IMAGE` is
+`image-registry.openshift-image-registry.svc:5000/$NS/benchmark-loadgen:latest`.
 </details>
 
 ## 2. Create the namespace objects
@@ -262,6 +272,111 @@ of [RUNBOOK.md](RUNBOOK.md).
 
 The claim is ReadWriteOnce, so the shell pod stays `Pending` until the Job's pod
 has finished. That is correct behaviour, not a fault.
+
+## Doing it from the web console
+
+Every step below has a console equivalent, and two steps do not: pushing an
+image from your laptop, and copying a directory of results out of the cluster.
+Both need a terminal. The console will hand you the tool for them — masthead
+**?** → **Command Line Tools** downloads the `oc` matching your cluster, and the
+user menu → **Copy login command** gives you the `oc login` line.
+
+Console paths below are for OpenShift 4.20. **Import YAML** means the **+** icon
+in the masthead, which accepts several documents separated by `---`.
+
+**1. Pick the project.** Top-left project selector, in either perspective.
+Everything you create lands there, so check it before each paste.
+
+**2. Create the supporting objects.** Import YAML, paste the contents of
+`deploy/openshift/rbac.yaml`, then `results-pvc.yaml`, then — only if
+**Networking → NetworkPolicies** already lists a deny-by-default policy —
+`networkpolicy.yaml`. Confirm afterwards: **Storage → PersistentVolumeClaims**
+shows `benchmark-results` as **Bound**. A claim stuck in **Pending** means no
+default storage class, and the run has nowhere to write.
+
+**3. Get the images in.** Either push them from your machine (steps 1–2 of the
+CLI procedure above — the console cannot push an image), or build them in the
+cluster:
+
+  - Import YAML with `deploy/openshift/buildconfigs.yaml`. Because it is a
+    Template, this creates the *template*, not the builds.
+  - Developer perspective → **+Add** → **All services** → filter **Templates**
+    → **benchmark-builds** → **Instantiate Template**, fill in your repository
+    URL and branch.
+  - **Builds → BuildConfigs → benchmark-sut → Actions → Start build**, and
+    watch the **Logs** tab. Repeat for `benchmark-loadgen` — that one compiles
+    ghz and the JMeter plugin, so it takes several minutes.
+  - **Builds → ImageStreams → benchmark-sut** shows the image reference to use
+    below. It looks like
+    `image-registry.openshift-image-registry.svc:5000/<project>/benchmark-sut`.
+
+If the build fails with a forbidden error naming `system:build-strategy-docker`,
+your cluster does not allow Docker-strategy builds from a namespace. Push from
+your machine instead.
+
+**4. Start the server.** Import YAML with `deploy/openshift/sut.yaml`, then
+Developer perspective → **+Add** → **All services** → **Templates** →
+**benchmark-sut** → **Instantiate Template**. The form asks for `IMAGE`, `CPU`,
+`MEMORY` and `HEAP`; the defaults are the ones discussed above.
+
+Check it came up: **Workloads → Pods**, `benchmark-sut-…` **Running** and
+**Ready 1/1**. If it is **CrashLoopBackOff**, open the pod's **Logs** tab —
+under memory pressure the JVM says so before it dies.
+
+**5. Preflight.** Skip this and you will find out about a NetworkPolicy five
+hours into a matrix. **Workloads → Pods → Create Pod** and paste:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: preflight
+spec:
+  containers:
+    - name: preflight
+      image: <your loadgen image>
+      command: ["sleep", "3600"]
+      resources:
+        requests: {cpu: "500m", memory: 1Gi}
+        limits: {cpu: "1", memory: 2Gi}
+```
+
+Open the pod → **Terminal** tab, and run the four checks from the
+[preflight section](#3-preflight--five-minutes-that-save-five-hours). Delete the
+pod afterwards: **Actions → Delete Pod**.
+
+**6. Run the matrix.** Import YAML with `deploy/openshift/loadgen-job.yaml`,
+then instantiate **benchmark-loadgen** from the Developer Catalog. `RUN_ID` must
+be lowercase and DNS-safe — `run-1`, or a timestamp like `20260827t1400z`.
+
+Start with `PROFILE=smoke` to prove the chain, then the real run.
+
+Watch it: **Workloads → Jobs → benchmark-loadgen-<run-id>**, then its pod's
+**Logs** tab. The harness logs one line per run, so the log is also the progress
+bar.
+
+**7. Confirm the two pods are on different nodes.** This is the whole reason for
+running on a cluster. **Workloads → Pods** shows a **Node** column; the SUT pod
+and the load generator pod must show different values. If the load generator is
+stuck **Pending**, its **Events** will say the anti-affinity rule could not be
+satisfied.
+
+**8. Read the results.** Instantiate **benchmark-results-shell** the same way
+(Import YAML `results-shell.yaml`, then instantiate). Its **Terminal** tab can
+show the report directly:
+
+```bash
+cat /results/<run-id>/report.md
+```
+
+To get the whole directory — raw records included, which is what makes the
+numbers recomputable — use `oc` from your machine:
+
+```bash
+oc rsync benchmark-results-shell:/results/<run-id> ./results/
+```
+
+Then delete the shell pod so it stops holding the claim.
 
 ## 6. Sanity checks before believing anything
 

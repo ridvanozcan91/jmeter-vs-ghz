@@ -6,18 +6,33 @@ Two images and one set of namespace-scoped manifests:
 sut.Dockerfile        the System Under Test
 loadgen.Dockerfile    JMeter with the plugin, ghz, and the harness, in one image
 docker-compose.yml    single-host composition, for developing the harness only
-openshift/            the cluster path — see ../docs/OPENSHIFT.md
+openshift/            the cluster path: templates, RBAC, claim, builds
+                      — see ../docs/OPENSHIFT.md
 ```
 
-> **Not built or applied here.** The environment this repository is developed in
-> has no container engine and no cluster, so neither image has been built and no
-> manifest has been applied. What is checked is that the manifests parse and
-> that the harness pieces they invoke run. Work through the preflight in
-> [../docs/OPENSHIFT.md](../docs/OPENSHIFT.md) before starting a long run; it
-> exists to catch what an unbuilt Dockerfile can still get wrong.
+> **What has been exercised, and what has not.** Both images have been built
+> and run: the SUT and the load generator were started as containers on one
+> host, each as an arbitrary UID in group 0 with no entry in `/etc/passwd`,
+> which is the condition OpenShift's restricted SCC imposes. The smoke matrix
+> ran end to end from inside the load generator container — both tools, the
+> shuffle, normalization, analysis and the report. The load generator was given
+> a 2-core cgroup quota, and the report's throttling banner fired on the JMeter
+> run, which was throttled in 73% of its scheduling periods while ghz was not.
+>
+> Two substitutions were forced by the build environment and are **not** part of
+> these Dockerfiles: its egress policy blocks Docker Hub's blob CDN, so the base
+> images came from `mcr.microsoft.com`, and Maven was installed with `apt`
+> rather than inherited from the `maven` image. Build these files as they are
+> and you get the pinned upstream bases.
+>
+> Nothing cluster-side has been applied — no `oc process`, no RBAC, no
+> anti-affinity, no claim, no NetworkPolicy, and no in-cluster build. Those are
+> what the preflight in [../docs/OPENSHIFT.md](../docs/OPENSHIFT.md) checks, and
+> the reason it exists.
 >
 > The validated way to produce authoritative numbers remains the native
-> two-machine procedure in [../docs/RUNBOOK.md](../docs/RUNBOOK.md).
+> two-machine procedure in [../docs/RUNBOOK.md](../docs/RUNBOOK.md): a cluster
+> answers the question about the tools, but on hardware you do not control.
 
 ## Why the manifests are OpenShift templates
 
