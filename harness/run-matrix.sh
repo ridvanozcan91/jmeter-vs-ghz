@@ -106,10 +106,18 @@ warm_sut() {
   rm -rf "${RAW_DIR}/_warmup"
 }
 
-# Deterministic shuffle: the run id seeds the order, so a rerun of the same id
-# reproduces the same interleaving.
+# Deterministic shuffle, varied per cell.
+#
+# The first argument is a salt identifying the cell. Seeding on the run id alone
+# would produce the same permutation on every call, so one tool would run first
+# in every single cell -- which is exactly the systematic bias the shuffle exists
+# to remove. Mixing the cell coordinates into the seed keeps the order varied
+# while staying reproducible for a given run id.
 shuffle() {
-  printf '%s\n' "$@" | awk -v seed="$(cksum <<<"${RUN_ID}" | cut -d' ' -f1)" '
+  local salt="$1"; shift
+  local seed
+  seed="$(cksum <<<"${RUN_ID}-${salt}" | cut -d' ' -f1)"
+  printf '%s\n' "$@" | awk -v seed="${seed}" '
     BEGIN { srand(seed) } { print rand() "\t" $0 }' | sort -k1,1 | cut -f2-
 }
 
@@ -169,7 +177,8 @@ run_one() {
   if [[ -s "${raw_file}" ]]; then
     python3 "${HERE}/normalize.py" --input "${raw_file}" \
       --output "${CANONICAL_DIR}/${tag}.csv" --tool "${tool}" --method "${method}" \
-      --concurrency "${concurrency}" --connections "${connections}" --repeat "${repeat}" \
+      --concurrency "${concurrency}" --connections "${connections}" \
+      --target-rps "${rps}" --repeat "${repeat}" \
       >/dev/null || log "WARNING: could not normalize ${tag}"
   else
     log "WARNING: ${tag} produced no raw output"
@@ -206,21 +215,33 @@ run_closed_loop() {
             start_sut; warm_sut "${method}"
             run_one ghz "${method}" "${concurrency}" "${connections}" "${repeat}"
           fi
-        done < <(shuffle "${plan[@]}")
+        done < <(shuffle "${method}-${concurrency}-${repeat}" "${plan[@]}")
       done
     done
   done
 }
 
 run_open_loop() {
-  # Open loop is reported as its own family. JMeter threads and ghz --rps are
-  # not interchangeable: one makes throughput an outcome, the other makes it an
-  # input. Mixing them into one table is the most common way these comparisons
-  # mislead, so they stay separate here.
+  # Open loop is reported as its own family. JMeter threads and a ghz rate limit
+  # are not interchangeable: one makes throughput an outcome, the other makes it
+  # an input. Mixing them into one table is the most common way these
+  # comparisons mislead, so the families stay separate.
+  #
+  # Both tools are driven toward the same target rates, with the same standby
+  # concurrency. They reach a rate by different mechanisms -- a Precise
+  # Throughput Timer against a token-bucket limiter -- so the comparison is
+  # between achieved rate and target, not between the pacing mechanisms.
   for rate in ${RATE_LEVELS}; do
     for repeat in $(seq 1 "${REPEATS}"); do
-      start_sut; warm_sut echo
-      run_one ghz echo "${OPEN_LOOP_CONCURRENCY}" 8 "${repeat}" "${rate}"
+      while read -r tool; do
+        start_sut; warm_sut echo
+        if [[ "${tool}" == "jmeter" ]]; then
+          run_one jmeter echo "${OPEN_LOOP_CONCURRENCY}" "${OPEN_LOOP_CONCURRENCY}" \
+            "${repeat}" "${rate}"
+        else
+          run_one ghz echo "${OPEN_LOOP_CONCURRENCY}" 8 "${repeat}" "${rate}"
+        fi
+      done < <(shuffle "open-${rate}-${repeat}" jmeter ghz)
     done
   done
 }

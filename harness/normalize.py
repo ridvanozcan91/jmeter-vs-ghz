@@ -46,6 +46,7 @@ CANONICAL_FIELDS = [
     "method",
     "concurrency",
     "connections",
+    "target_rps",
     "repeat",
     "start_ns",
     "end_ns",
@@ -69,6 +70,9 @@ class RunMeta:
     method: str
     concurrency: int
     connections: int
+    # 0 means closed loop: throughput is an outcome, not a target. Non-zero puts
+    # the run in the open-loop family, which is never tabulated alongside it.
+    target_rps: int
     repeat: int
 
 
@@ -187,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--method", required=True)
     parser.add_argument("--concurrency", required=True, type=int)
     parser.add_argument("--connections", required=True, type=int)
+    parser.add_argument(
+        "--target-rps", type=int, default=0, help="0 for closed-loop runs"
+    )
     parser.add_argument("--repeat", required=True, type=int)
     args = parser.parse_args(argv)
 
@@ -195,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         method=args.method,
         concurrency=args.concurrency,
         connections=args.connections,
+        target_rps=args.target_rps,
         repeat=args.repeat,
     )
     records = normalize(args.input, meta)

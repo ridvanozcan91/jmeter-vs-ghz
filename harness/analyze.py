@@ -61,6 +61,7 @@ def load_records(path: Path) -> list[dict]:
                 **row,
                 "concurrency": int(row["concurrency"]),
                 "connections": int(row["connections"]),
+                "target_rps": int(row.get("target_rps", 0) or 0),
                 "repeat": int(row["repeat"]),
                 "start_ns": int(row["start_ns"]),
                 "end_ns": int(row["end_ns"]),
@@ -114,6 +115,7 @@ def summarize(records: list[dict], warmup_ns: int, measure_ns: int) -> dict:
         "method": first["method"],
         "concurrency": first["concurrency"],
         "connections": first["connections"],
+        "target_rps": first["target_rps"],
         "repeat": first["repeat"],
         "window_start_ns": window_start,
         "window_end_ns": window_end,
@@ -160,7 +162,13 @@ def aggregate(summaries: list[dict]) -> dict:
     throughputs = sorted(s["throughput_rps"] for s in summaries)
     p99s = sorted(s["latency_ns"]["p99"] for s in summaries if s["latency_ns"]["p99"])
 
-    def iqr(values: list[float]) -> float:
+    def spread(values: list[float]) -> float:
+        """Interquartile range, falling back to the full range for few repeats.
+
+        With three repeats there are no meaningful quartiles, so reporting an
+        "IQR" would dress up the range as something more rigorous. The field is
+        named spread for that reason, and the report says which one it is.
+        """
         if len(values) < 4:
             return values[-1] - values[0] if values else 0.0
         return percentile(values, 75) - percentile(values, 25)
@@ -170,17 +178,19 @@ def aggregate(summaries: list[dict]) -> dict:
         "method": reference["method"],
         "concurrency": reference["concurrency"],
         "connections": reference["connections"],
+        "target_rps": reference["target_rps"],
         "repeats": len(summaries),
+        "spread_is_iqr": len(summaries) >= 4,
         "throughput_rps_median": statistics.median(throughputs),
         "throughput_rps_min": throughputs[0],
         "throughput_rps_max": throughputs[-1],
-        "throughput_rps_iqr": iqr(throughputs),
+        "throughput_rps_spread": spread(throughputs),
         "latency_ns_median": {
             key: statistics.median([s["latency_ns"][key] for s in summaries])
             for key in summaries[0]["latency_ns"]
             if all(s["latency_ns"][key] is not None for s in summaries)
         },
-        "latency_p99_iqr_ns": iqr([float(v) for v in p99s]) if p99s else 0.0,
+        "latency_p99_spread_ns": spread([float(v) for v in p99s]) if p99s else 0.0,
         "error_rate_median": statistics.median([s["error_rate"] for s in summaries]),
         "achieved_concurrency_median": statistics.median(
             [s.get("achieved_concurrency", 0.0) for s in summaries]
@@ -188,12 +198,27 @@ def aggregate(summaries: list[dict]) -> dict:
         "concurrency_efficiency_median": statistics.median(
             [s.get("concurrency_efficiency", 0.0) for s in summaries]
         ),
+        # For an open-loop run this is the result: did the tool actually hit the
+        # rate it was asked for, or did it fall short and quietly report success?
+        "rate_attainment_median": (
+            statistics.median(throughputs) / reference["target_rps"]
+            if reference["target_rps"]
+            else None
+        ),
         "latency_resolution_ns": reference["latency_resolution_ns"],
     }
 
 
 def scenario_key(summary: dict) -> tuple:
-    return (summary["tool"], summary["method"], summary["concurrency"], summary["connections"])
+    # target_rps is part of the identity of a scenario: without it, open-loop
+    # runs at different rates would be averaged into one meaningless row.
+    return (
+        summary["tool"],
+        summary["method"],
+        summary["concurrency"],
+        summary["connections"],
+        summary["target_rps"],
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

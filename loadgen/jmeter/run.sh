@@ -26,7 +26,17 @@ OUT_DIR="${4:?out dir required}"
 TARGET_RPS="${5:-0}"
 
 JMETER_HOME="${JMETER_HOME:?JMETER_HOME must point at an Apache JMeter installation}"
-PLAN="${JMETER_PLAN:-${HERE}/plans/closed-loop.jmx}"
+
+# A target rate selects the open-loop plan, which paces requests with a Precise
+# Throughput Timer. Without one, throughput must be an outcome of thread count,
+# so the closed-loop plan is used and carries no timer at all.
+if [[ -n "${JMETER_PLAN:-}" ]]; then
+  PLAN="${JMETER_PLAN}"
+elif [[ "${5:-0}" != "0" ]]; then
+  PLAN="${HERE}/plans/open-loop.jmx"
+else
+  PLAN="${HERE}/plans/closed-loop.jmx"
+fi
 mkdir -p "${OUT_DIR}"
 
 # JMeter's own JVM. Kept identical across every run of the matrix.

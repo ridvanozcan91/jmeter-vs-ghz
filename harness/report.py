@@ -74,10 +74,13 @@ def load_server_series(results_dir: Path) -> dict[str, dict]:
 
 
 def run_tag(run: dict) -> str:
-    return (
+    tag = (
         f"{run['tool']}_{run['method']}_c{run['concurrency']}"
         f"_conn{run['connections']}_r{run['repeat']}"
     )
+    if run.get("target_rps"):
+        tag = f"{tag}_rps{run['target_rps']}"
+    return tag
 
 
 def server_completions_in_window(payload: dict, method: str, start_ns: int, end_ns: int):
@@ -248,7 +251,11 @@ def build_report(results_dir: Path) -> str:
     lines.append(f"| Percentiles | {analysis['percentile_method']} |")
     lines.append("")
 
-    scenarios = analysis["scenarios"]
+    # The two families are separated here and never rejoined. Threads make
+    # throughput an outcome; a target rate makes it an input, and a table that
+    # mixes them compares two different experiments.
+    scenarios = [s for s in analysis["scenarios"] if not s.get("target_rps")]
+    open_loop = [s for s in analysis["scenarios"] if s.get("target_rps")]
     methods = sorted({s["method"] for s in scenarios})
 
     for method in methods:
@@ -287,7 +294,7 @@ def build_report(results_dir: Path) -> str:
 
         # --- Detail table -----------------------------------------------------
         lines.append(
-            "| Tool | Concurrency | Connections | RPS (median) | RPS spread (IQR) | "
+            "| Tool | Concurrency | Connections | RPS (median) | RPS spread | "
             "p50 ms | p99 ms | Errors | Achieved concurrency | Client cores | RPS/core |"
         )
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
@@ -319,13 +326,54 @@ def build_report(results_dir: Path) -> str:
 
             lines.append(
                 f"| {label} | {scenario['concurrency']} | {scenario['connections']} "
-                f"| {rps:,.0f} | {scenario['throughput_rps_iqr']:,.0f} "
+                f"| {rps:,.0f} | {scenario['throughput_rps_spread']:,.0f} "
                 f"| {fmt_ms(latency.get('p50'))} | {fmt_ms(latency.get('p99'))} "
                 f"| {scenario['error_rate_median'] * 100:.2f}% "
                 f"| {scenario['achieved_concurrency_median']:.1f} "
                 f"| {cores_cell} | {per_core_cell} |"
             )
 
+        spread_kind = (
+            "interquartile range"
+            if any(s.get("spread_is_iqr") for s in method_scenarios)
+            else "full range across repeats, since there are too few for quartiles"
+        )
+        lines.append("")
+        lines.append(f"RPS spread is the {spread_kind}.")
+        lines.append("")
+
+    # --- Open loop family, reported separately --------------------------------
+    if open_loop:
+        lines.append("## Open loop: target rate versus achieved rate")
+        lines.append("")
+        lines.append(
+            "A separate experiment from everything above, and never to be read "
+            "in the same table. Here throughput is an *input*: each tool is "
+            "asked for a rate and the question is whether it delivered. JMeter "
+            "paces with a Precise Throughput Timer and ghz with its own rate "
+            "limiter, so this compares attainment, not pacing mechanisms."
+        )
+        lines.append("")
+        lines.append(
+            "| Tool | Target RPS | Achieved RPS (median) | Attainment | p99 ms | Errors |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|")
+        for scenario in sorted(open_loop, key=lambda s: (s["target_rps"], s["tool"])):
+            attainment = scenario.get("rate_attainment_median")
+            attainment_cell = f"{attainment * 100:.0f}%" if attainment else "n/a"
+            lines.append(
+                f"| {series_label(scenario['tool'], scenario['connections'], scenario['concurrency'])} "
+                f"| {scenario['target_rps']:,} "
+                f"| {scenario['throughput_rps_median']:,.0f} | {attainment_cell} "
+                f"| {fmt_ms(scenario['latency_ns_median'].get('p99'))} "
+                f"| {scenario['error_rate_median'] * 100:.2f}% |"
+            )
+        lines.append("")
+        lines.append(
+            "Attainment well below 100% means the tool could not generate the "
+            "rate it was asked for. Attainment at 100% with rising latency means "
+            "it could, and the *server* is where the queue formed."
+        )
         lines.append("")
 
     # --- Connection topology, the multiplexing evidence -----------------------

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Open-loop gRPC load plan.
+
+  Throughput is an input here, not an outcome: a Precise Throughput Timer paces
+  requests toward a target rate while enough threads stand by to absorb queueing.
+  This is the closest JMeter equivalent of ghz's rate limit, and the report labels it
+  as approximate rather than identical, because the two tools reach a target rate
+  by different mechanisms.
+
+  Results from this plan are never placed in the same table as closed-loop
+  results. See docs/METHODOLOGY.md, rule 2.
+-->
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="jmeter-vs-ghz open loop" enabled="true">
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="grpc-load" enabled="true">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(threads,256)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,0)}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <PreciseThroughputTimer guiclass="TestBeanGUI" testclass="PreciseThroughputTimer" testname="Precise Throughput Timer" enabled="true">
+          <stringProp name="throughput">${__P(targetRps,100)}</stringProp>
+          <intProp name="throughputPeriod">1</intProp>
+          <stringProp name="duration">${__P(duration,60)}</stringProp>
+          <intProp name="batchSize">1</intProp>
+          <intProp name="batchThreadDelay">0</intProp>
+          <stringProp name="exactLimit">10000</stringProp>
+          <stringProp name="allowedThroughputSurplus">1.0</stringProp>
+          <stringProp name="randomSeed">0</stringProp>
+        </PreciseThroughputTimer>
+        <hashTree/>
+        <vn.zalopay.benchmark.GRPCSampler guiclass="vn.zalopay.benchmark.GRPCSamplerGui" testclass="vn.zalopay.benchmark.GRPCSampler" testname="grpc-request" enabled="true">
+          <stringProp name="GRPCSampler.protoFolder">${__P(protoFolder,)}</stringProp>
+          <stringProp name="GRPCSampler.libFolder"></stringProp>
+          <stringProp name="GRPCSampler.metadata"></stringProp>
+          <stringProp name="GRPCSampler.host">${__P(host,127.0.0.1)}</stringProp>
+          <stringProp name="GRPCSampler.port">${__P(port,9090)}</stringProp>
+          <stringProp name="GRPCSampler.fullMethod">${__P(fullMethod,)}</stringProp>
+          <stringProp name="GRPCSampler.deadline">${__P(deadline,20000)}</stringProp>
+          <boolProp name="GRPCSampler.tls">false</boolProp>
+          <boolProp name="GRPCSampler.tlsDisableVerification">false</boolProp>
+          <stringProp name="GRPCSampler.channelAwaitTermination">${__P(channelAwaitTermination,5000)}</stringProp>
+          <stringProp name="GRPCSampler.maxInboundMessageSize">${__P(maxInboundMessageSize,16777216)}</stringProp>
+          <stringProp name="GRPCSampler.maxInboundMetadataSize">${__P(maxInboundMetadataSize,8192)}</stringProp>
+          <stringProp name="GRPCSampler.requestJson">${__P(requestJson,{})}</stringProp>
+        </vn.zalopay.benchmark.GRPCSampler>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

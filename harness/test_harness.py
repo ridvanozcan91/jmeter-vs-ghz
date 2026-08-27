@@ -72,7 +72,7 @@ class TimestampSemanticsTest(unittest.TestCase):
                     }
                 )
             )
-            meta = normalize.RunMeta("ghz", "echo", 8, 1, 1)
+            meta = normalize.RunMeta("ghz", "echo", 8, 1, 0, 1)
             [record] = normalize.normalize_ghz(raw, meta)
 
             self.assertEqual(record["end_ns"] - record["start_ns"], 2_000_000)
@@ -87,7 +87,7 @@ class TimestampSemanticsTest(unittest.TestCase):
                 writer.writerow(["timeStamp", "elapsed", "success", "responseCode"])
                 writer.writerow([1_700_000_000_000, 2, "true", "200"])
 
-            meta = normalize.RunMeta("jmeter", "echo", 8, 8, 1)
+            meta = normalize.RunMeta("jmeter", "echo", 8, 8, 0, 1)
             [record] = normalize.normalize_jmeter(raw, meta)
 
             self.assertEqual(record["start_ns"], 1_700_000_000_000 * 1_000_000)
@@ -120,9 +120,9 @@ class TimestampSemanticsTest(unittest.TestCase):
                 writer.writerow(["timeStamp", "elapsed", "success", "responseCode"])
                 writer.writerow([(end_ns - latency_ns) // 1_000_000, 5, "true", "200"])
 
-            [from_ghz] = normalize.normalize_ghz(ghz_raw, normalize.RunMeta("ghz", "echo", 1, 1, 1))
+            [from_ghz] = normalize.normalize_ghz(ghz_raw, normalize.RunMeta("ghz", "echo", 1, 1, 0, 1))
             [from_jmeter] = normalize.normalize_jmeter(
-                jmeter_raw, normalize.RunMeta("jmeter", "echo", 1, 1, 1)
+                jmeter_raw, normalize.RunMeta("jmeter", "echo", 1, 1, 0, 1)
             )
 
             self.assertEqual(from_ghz["start_ns"], from_jmeter["start_ns"])
@@ -148,7 +148,7 @@ class StatusMappingTest(unittest.TestCase):
                     }
                 )
             )
-            [record] = normalize.normalize_ghz(raw, normalize.RunMeta("ghz", "echo", 1, 1, 1))
+            [record] = normalize.normalize_ghz(raw, normalize.RunMeta("ghz", "echo", 1, 1, 0, 1))
             self.assertFalse(record["ok"])
             self.assertEqual(record["status"], "DeadlineExceeded")
 
@@ -159,7 +159,7 @@ class StatusMappingTest(unittest.TestCase):
                 writer = csv.writer(handle)
                 writer.writerow(["timeStamp", "elapsed", "success", "responseCode"])
                 writer.writerow([1_700_000_000_000, 7, "false", "500"])
-            [record] = normalize.normalize_jmeter(raw, normalize.RunMeta("jmeter", "echo", 1, 1, 1))
+            [record] = normalize.normalize_jmeter(raw, normalize.RunMeta("jmeter", "echo", 1, 1, 0, 1))
             self.assertFalse(record["ok"])
             self.assertEqual(record["status"], "500")
 
@@ -175,6 +175,7 @@ class WindowTest(unittest.TestCase):
                 "method": "echo",
                 "concurrency": 1,
                 "connections": 1,
+                "target_rps": 0,
                 "repeat": 1,
                 "start_ns": start_ns + i * spacing_ns,
                 "end_ns": start_ns + i * spacing_ns + latency_ns,
@@ -221,6 +222,7 @@ class AggregationTest(unittest.TestCase):
             "method": "echo",
             "concurrency": 8,
             "connections": 1,
+            "target_rps": 0,
             "latency_resolution_ns": 1,
             "error_rate": 0.0,
             "achieved_concurrency": 8.0,
@@ -235,6 +237,42 @@ class AggregationTest(unittest.TestCase):
         result = analyze.aggregate(summaries)
         self.assertEqual(result["throughput_rps_median"], 100.0)
         self.assertEqual(result["throughput_rps_min"], 10.0)
+
+
+class FamilySeparationTest(unittest.TestCase):
+    """Closed-loop and open-loop runs must never merge into one scenario."""
+
+    @staticmethod
+    def _summary(target_rps: int, throughput: float) -> dict:
+        return {
+            "tool": "ghz",
+            "method": "echo",
+            "concurrency": 256,
+            "connections": 8,
+            "target_rps": target_rps,
+            "repeat": 1,
+            "throughput_rps": throughput,
+            "latency_ns": {"p99": 1000},
+            "latency_resolution_ns": 1,
+            "error_rate": 0.0,
+            "achieved_concurrency": 1.0,
+            "concurrency_efficiency": 1.0,
+        }
+
+    def test_different_target_rates_are_different_scenarios(self):
+        # Without target_rps in the key, a 1k run and a 10k run of the same tool
+        # would average into one row that describes neither.
+        low = analyze.scenario_key(self._summary(1000, 990.0))
+        high = analyze.scenario_key(self._summary(10000, 9800.0))
+        self.assertNotEqual(low, high)
+
+    def test_open_loop_is_scored_on_rate_attainment(self):
+        result = analyze.aggregate([self._summary(10000, 8000.0)])
+        self.assertAlmostEqual(result["rate_attainment_median"], 0.8)
+
+    def test_closed_loop_has_no_rate_attainment(self):
+        result = analyze.aggregate([self._summary(0, 8000.0)])
+        self.assertIsNone(result["rate_attainment_median"])
 
 
 if __name__ == "__main__":
