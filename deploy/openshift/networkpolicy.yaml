@@ -1,0 +1,30 @@
+# Only needed where the namespace has a default-deny ingress policy, which is
+# common in corporate clusters. Check first:
+#
+#   oc get networkpolicy
+#
+# If a deny-by-default policy exists and this one is missing, the symptom is a
+# load generator that fails every request with UNAVAILABLE while the SUT looks
+# perfectly healthy — which reads exactly like a tool failure and is not one.
+#
+#   oc apply -f deploy/openshift/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-loadgen-to-sut
+spec:
+  podSelector:
+    matchLabels:
+      app: benchmark-sut
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: benchmark-loadgen
+      ports:
+        - protocol: TCP
+          port: 9090   # gRPC
+        - protocol: TCP
+          port: 9091   # actuator: health, and the server's own metrics

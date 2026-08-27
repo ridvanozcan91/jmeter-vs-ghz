@@ -1,0 +1,42 @@
+# The permission the load generator needs, and nothing beyond it.
+#
+#   oc apply -f deploy/openshift/rbac.yaml
+#
+# Why a pod is allowed to delete another pod here: the matrix restarts the SUT
+# between tools so that neither tool inherits JIT compilation paid for by the
+# other. On one host the harness owns the JVM and kills it directly; in a
+# cluster the equivalent is deleting the pod and letting the Deployment replace
+# it. Without this, whichever tool runs second in a cell is measured against a
+# server the first tool warmed up.
+#
+# The Role is namespace-scoped and covers pods only. If your cluster does not
+# let you create Roles, run with SUT_RESTART_CMD set to an empty value and state
+# in the results that the server was shared warm between tools.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: benchmark-loadgen
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: benchmark-sut-restart
+rules:
+  # list and get: find the SUT pods, learn which node they run on, and wait for
+  # the replacement to report ready.
+  # delete: the restart itself. Nothing here can create or modify a workload.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: benchmark-loadgen-sut-restart
+subjects:
+  - kind: ServiceAccount
+    name: benchmark-loadgen
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: benchmark-sut-restart

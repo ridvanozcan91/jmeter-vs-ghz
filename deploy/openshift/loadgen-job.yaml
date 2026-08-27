@@ -1,0 +1,173 @@
+# The load generator, as an OpenShift template.
+#
+#   oc process -f deploy/openshift/loadgen-job.yaml \
+#     -p IMAGE=<ref> -p RUN_ID=<lowercase-dns-safe-id> | oc apply -f -
+#
+# One Job runs the whole matrix: both tools, shuffled, from the same pod. That
+# is not a convenience — running each tool as its own Job would put them on
+# different nodes at different times, and the comparison would carry whatever
+# difference the scheduler happened to introduce.
+#
+# The anti-affinity rule is the point of running this on a cluster at all: it is
+# what keeps the load generator off the node running the SUT, so the two never
+# compete for the same cores.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: benchmark-loadgen
+  annotations:
+    description: Runs the jmeter-vs-ghz matrix against benchmark-sut
+parameters:
+  - name: IMAGE
+    description: Fully qualified load generator image, ideally pinned by digest
+    required: true
+  - name: RUN_ID
+    description: >-
+      Identifies the run. Becomes part of the Job name, so it must be lowercase
+      and DNS-safe, and results are written to results/<RUN_ID> on the claim.
+    required: true
+  - name: PROFILE
+    description: smoke, local or full
+    value: full
+  - name: FAMILY
+    description: closed, open or all
+    value: closed
+  - name: CPU
+    description: >-
+      CPU request and limit. Both tools get exactly this budget; giving one side
+      more would make requests-per-core meaningless. Watch the report for a
+      throttling warning — a throttled tool reports the quota's ceiling, not its own.
+    value: "4"
+  - name: MEMORY
+    value: 8Gi
+  - name: JMETER_HEAP
+    description: JMeter's JVM. Must fit inside MEMORY alongside ghz and the harness.
+    value: "-Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
+  # The three below trim the matrix to fit a namespace quota or a maintenance
+  # window. They are read only by --profile full: the smoke and local profiles
+  # set their own values, because their whole purpose is to be fixed.
+  - name: CONCURRENCY_LEVELS
+    description: "Space-separated, e.g. \"8 32 128 256\". Empty keeps the full sweep."
+    value: ""
+  - name: METHODS
+    description: "Space-separated subset of: echo compute payload. Empty keeps all three."
+    value: ""
+  - name: REPEATS
+    description: Runs per cell. Empty keeps 5. Below 3 there is no spread to report.
+    value: ""
+  - name: SUT_HOST
+    description: Service name of the SUT, resolved in the same namespace
+    value: benchmark-sut
+  - name: SUT_SELECTOR
+    description: Label selector identifying the SUT pods, for the restart between tools
+    value: app=benchmark-sut
+  - name: SUT_RESTART_CMD
+    description: >-
+      Run between tools so neither inherits the other's JIT compilation. Requires
+      the Role in rbac.yaml. Set to an empty value to skip it, and say so when
+      reporting the numbers.
+    value: python3 /app/harness/k8s_restart_sut.py --selector app=benchmark-sut
+  - name: SERVICE_ACCOUNT
+    value: benchmark-loadgen
+  - name: RESULTS_CLAIM
+    description: PersistentVolumeClaim the results are written to
+    value: benchmark-results
+objects:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: benchmark-loadgen-${RUN_ID}
+      labels:
+        app: benchmark-loadgen
+        run-id: ${RUN_ID}
+    spec:
+      # No retries. A half-finished matrix restarted from zero would write a
+      # second set of runs into the same results directory, and the two would be
+      # indistinguishable afterwards.
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: benchmark-loadgen
+            run-id: ${RUN_ID}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: app
+                        operator: In
+                        values: ["benchmark-sut"]
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: loadgen
+              image: ${IMAGE}
+              # The node the SUT landed on is recorded before the matrix starts,
+              # so the report can refuse to call a run authoritative when both
+              # pods ended up on the same machine.
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  export SUT_NODE_NAME="$(python3 /app/harness/k8s_restart_sut.py \
+                    --selector "${SUT_SELECTOR}" --print-node || echo unknown)"
+                  echo "loadgen on ${NODE_NAME}, SUT on ${SUT_NODE_NAME}"
+                  exec harness/run-matrix.sh --profile "${PROFILE}" --family "${FAMILY}"
+              env:
+                - name: RUN_ID
+                  value: ${RUN_ID}
+                - name: PROFILE
+                  value: ${PROFILE}
+                - name: FAMILY
+                  value: ${FAMILY}
+                - name: SUT_HOST
+                  value: ${SUT_HOST}
+                - name: SUT_SELECTOR
+                  value: ${SUT_SELECTOR}
+                - name: SUT_RESTART_CMD
+                  value: ${SUT_RESTART_CMD}
+                - name: JMETER_HEAP
+                  value: ${JMETER_HEAP}
+                # Empty values fall through to the defaults in
+                # loadgen/common/env.sh rather than blanking the matrix.
+                - name: CONCURRENCY_LEVELS
+                  value: ${CONCURRENCY_LEVELS}
+                - name: METHODS
+                  value: ${METHODS}
+                - name: REPEATS
+                  value: ${REPEATS}
+                # Recorded in the manifest: without it a set of numbers cannot
+                # be tied back to the image that produced them.
+                - name: LOADGEN_IMAGE
+                  value: ${IMAGE}
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+              resources:
+                requests:
+                  cpu: ${CPU}
+                  memory: ${MEMORY}
+                limits:
+                  cpu: ${CPU}
+                  memory: ${MEMORY}
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              volumeMounts:
+                - name: results
+                  mountPath: /app/results
+          volumes:
+            # A claim rather than an emptyDir: the full matrix runs for hours,
+            # and results that die with the pod are results that have to be
+            # produced twice.
+            - name: results
+              persistentVolumeClaim:
+                claimName: ${RESULTS_CLAIM}
