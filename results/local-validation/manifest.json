@@ -1,0 +1,39 @@
+{
+  "run_id": "local-validation",
+  "captured_at_utc": "2026-08-27T21:07:49Z",
+  "git": {
+    "commit": "HEAD",
+    "dirty": true
+  },
+  "proto_sha256": "e316e323bc7d77f93c90612365181b4f5ef7266d6b972c9f63948c0ee61faa69",
+  "host": {
+    "kernel": "Linux 6.18.44-fc-v22",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpu_count": 4,
+    "memory_kb": 16461068,
+    "ulimit_nofile": 20000,
+    "somaxconn": 4096
+  },
+  "tools": {
+    "java": "openjdk version \"21.0.10\" 2026-01-20",
+    "ghz": "0.121.0",
+    "ghz_binary_sha256": "a55538170b602a7e446ac25bcf27c5cecc5d88b1cfa5758230ae2afbd05af733",
+    "jmeter_home": "/home/user/bench-tools/apache-jmeter-5.6.3",
+    "jmeter_plugin_sha256": "ee88872a2f074440e58dceff254249f8421f3291c652df264a09927bf1fe8f15"
+  },
+  "target": {
+    "host": "127.0.0.1",
+    "grpc_port": 9090,
+    "same_host_as_loadgen": true
+  },
+  "scenario": {
+    "warmup_seconds": 8,
+    "measure_seconds": 15,
+    "repeats": 3,
+    "request_timeout_ms": 20000,
+    "concurrency_levels": "8 32 128",
+    "methods": "echo compute",
+    "sut_cpus": "0,1",
+    "loadgen_cpus": "2"
+  }
+}

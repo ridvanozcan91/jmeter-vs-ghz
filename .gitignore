@@ -1,0 +1,26 @@
+# Toolchain installed by tools/install-*.sh
+.tools/
+
+# Build output
+sut/target/
+*.class
+
+# Python
+__pycache__/
+*.pyc
+
+# JMeter leftovers
+*.jtl
+jmeter.log
+
+# Per-request records. A single run produces hundreds of megabytes of raw tool
+# output (ghz emits one JSON object per request), so raw and canonical records
+# stay local. Derived statistics, manifests and reports ARE committed, and
+# harness/pack-results.sh builds a shareable archive of the records themselves.
+results/*/raw/
+results/*/normalized/
+
+# Throwaway pipeline check; not a benchmark result.
+results/smoke-test/
+results/ci-smoke/
+results/*/sut.log

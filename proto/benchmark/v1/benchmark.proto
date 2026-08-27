@@ -1,0 +1,71 @@
+// Benchmark service contract shared by every load generator in this repository.
+//
+// The methods are deliberately shaped to isolate different bottlenecks:
+//   Echo    - minimal payload, exposes the raw per-RPC overhead of the tool.
+//   Compute - server delays the response without blocking a thread, so the
+//             achievable throughput of a closed-loop client is bounded by its
+//             own concurrency (concurrency / delay), not by the server.
+//   Payload - variable request/response size, exposes serialization cost.
+//   ServerStream / BidiStream - streaming support, reported honestly per tool.
+syntax = "proto3";
+
+package benchmark.v1;
+
+option java_multiple_files = true;
+option java_package = "io.jmetervsghz.benchmark.v1";
+option java_outer_classname = "BenchmarkProto";
+
+service BenchmarkService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Compute(ComputeRequest) returns (ComputeResponse);
+  rpc Payload(PayloadRequest) returns (PayloadResponse);
+  rpc ServerStream(StreamRequest) returns (stream StreamResponse);
+  rpc BidiStream(stream StreamRequest) returns (stream StreamResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+  // Nanosecond timestamp taken by the server when the handler ran. Load
+  // generators do not depend on it; it exists so a run can be spot-checked
+  // against the server clock.
+  int64 server_unix_nanos = 2;
+}
+
+message ComputeRequest {
+  // Server-side delay before responding. Implemented with a scheduler, so no
+  // server thread is blocked and the server never becomes the bottleneck.
+  uint32 delay_ms = 1;
+  string message = 2;
+}
+
+message ComputeResponse {
+  uint32 delay_ms = 1;
+  string message = 2;
+  int64 server_unix_nanos = 3;
+}
+
+message PayloadRequest {
+  // Number of bytes the server should return. Content is deterministic.
+  uint32 response_size_bytes = 1;
+  bytes payload = 2;
+}
+
+message PayloadResponse {
+  bytes payload = 1;
+  uint32 request_size_bytes = 2;
+}
+
+message StreamRequest {
+  uint32 message_count = 1;
+  uint32 delay_ms = 2;
+  string message = 3;
+}
+
+message StreamResponse {
+  uint32 index = 1;
+  string message = 2;
+}

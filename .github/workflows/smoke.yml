@@ -1,0 +1,78 @@
+# Verifies that the harness still works. Deliberately NOT a performance gate:
+# shared CI runners are noisy and shared, so any throughput number produced here
+# would be meaningless. What this checks is that the pipeline runs end to end and
+# that the fairness-critical code still behaves as documented.
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  harness-tests:
+    name: harness unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # No dependencies to install: the harness is standard library only, which
+      # is what makes this benchmark cheap for anyone to re-run.
+      - name: Run harness tests
+        run: python3 harness/test_harness.py
+
+  end-to-end:
+    name: end-to-end smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install load generators
+        run: |
+          tools/install-ghz.sh
+          tools/install-jmeter.sh
+
+      - name: Build SUT
+        run: cd sut && mvn -q -B -DskipTests package
+
+      - name: Start SUT
+        run: |
+          nohup java -jar sut/target/benchmark-sut-1.0.0.jar > /tmp/sut.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:9091/actuator/health >/dev/null && exit 0
+            sleep 2
+          done
+          echo "SUT failed to start"; cat /tmp/sut.log; exit 1
+
+      - name: Smoke run
+        env:
+          GHZ_BIN: ${{ github.workspace }}/.tools/bin/ghz
+          JMETER_HOME: ${{ github.workspace }}/.tools/apache-jmeter-5.6.3
+          RUN_ID: ci-smoke
+        run: harness/run-matrix.sh --profile smoke --family closed
+
+      - name: Check both tools produced records
+        run: |
+          # A green pipeline that silently benchmarked only one tool would be
+          # worse than a red one, so assert that each tool's records exist.
+          ls results/ci-smoke/normalized/ | grep -q '^jmeter_' || {
+            echo "no JMeter records"; exit 1; }
+          ls results/ci-smoke/normalized/ | grep -q '^ghz_' || {
+            echo "no ghz records"; exit 1; }
+          test -s results/ci-smoke/report.md
+
+      - name: Upload smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: results/ci-smoke/

@@ -1,0 +1,42 @@
+# System Under Test configuration.
+#
+# Defaults are deliberately generous: the server must never be the bottleneck,
+# otherwise the benchmark measures the server rather than the load generators.
+spring:
+  application:
+    name: benchmark-sut
+  main:
+    banner-mode: off
+
+grpc:
+  server:
+    port: ${GRPC_PORT:9090}
+    # Plaintext. Both load generators are configured the same way; see
+    # docs/METHODOLOGY.md for why TLS is off on both sides rather than on one.
+    security:
+      enabled: false
+    max-inbound-message-size: 16MB
+
+# Actuator lives on its own HTTP port so that scraping metrics never competes
+# with the gRPC port under load.
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9091}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: benchmark-sut
+
+benchmark:
+  delay-scheduler-threads: ${DELAY_SCHEDULER_THREADS:4}
+
+logging:
+  level:
+    root: WARN
+    io.jmetervsghz: INFO

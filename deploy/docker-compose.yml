@@ -1,0 +1,25 @@
+# Single-host composition for developing the harness.
+#
+# NOT for producing benchmark numbers: containers on one host share CPU, so the
+# load generator competes with the server exactly as it would without Docker.
+# See ../docs/RUNBOOK.md for the two-machine procedure.
+#
+# Untested: this file was written in an environment with no Docker daemon.
+services:
+  sut:
+    build:
+      context: ..
+      dockerfile: deploy/sut.Dockerfile
+    ports:
+      - "9090:9090"   # gRPC
+      - "9091:9091"   # actuator, including the Prometheus endpoint
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -Xms2g -Xmx2g"
+    # Reserved so the server keeps its own cores. The load generator must be
+    # given a disjoint set, or the comparison measures contention.
+    cpuset: "0,1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
