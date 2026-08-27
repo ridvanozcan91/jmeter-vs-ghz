@@ -45,6 +45,10 @@ export HEAP="${JMETER_HEAP:--Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=100}
 save_opts=(
   -Jjmeter.save.saveservice.output_format=csv
   -Jjmeter.save.saveservice.timestamp_format=ms
+  # Set explicitly rather than relying on jmeter.properties: normalization
+  # treats this column as the sample START time, and a properties file that
+  # said otherwise would silently shift every JMeter record by its own latency.
+  -Jsampleresult.timestamp.start=true
   -Jjmeter.save.saveservice.time=true
   -Jjmeter.save.saveservice.label=true
   -Jjmeter.save.saveservice.response_code=true

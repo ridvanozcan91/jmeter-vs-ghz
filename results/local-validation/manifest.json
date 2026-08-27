@@ -1,8 +1,8 @@
 {
   "run_id": "local-validation",
-  "captured_at_utc": "2026-08-27T21:07:49Z",
+  "captured_at_utc": "2026-08-27T21:18:59Z",
   "git": {
-    "commit": "HEAD",
+    "commit": "5ae65a056f3a64b8dba21bcc07e45b8473beec83",
     "dirty": true
   },
   "proto_sha256": "e316e323bc7d77f93c90612365181b4f5ef7266d6b972c9f63948c0ee61faa69",

@@ -23,3 +23,20 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  loadgen:
+    build:
+      context: ..
+      dockerfile: deploy/loadgen.Dockerfile
+    depends_on:
+      sut:
+        condition: service_healthy
+    environment:
+      SUT_HOST: sut
+      RUN_ID: compose-run
+    # A disjoint CPU set from the SUT. Without this the two compete and the
+    # comparison measures contention rather than the tools.
+    cpuset: "2,3"
+    command: ["--profile", "local", "--family", "closed"]
+    volumes:
+      - ../results:/app/results
