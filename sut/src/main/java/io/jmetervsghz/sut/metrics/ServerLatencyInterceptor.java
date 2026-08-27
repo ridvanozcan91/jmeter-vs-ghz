@@ -29,7 +29,7 @@ import net.devh.boot.grpc.server.interceptor.GrpcGlobalServerInterceptor;
  *       the server. This is the number that exposes a load generator which
  *       cannot hold the concurrency it claims to be running.
  * </ul>
-
+ *
  * <p>Connection counting lives in {@link ConnectionTracker}, which observes the
  * transport rather than individual calls.
  */
