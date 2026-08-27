@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -107,11 +108,25 @@ def server_completions_in_window(payload: dict, method: str, start_ns: int, end_
     return total(inside[-1]) - total(inside[0])
 
 
-def server_peak(payload: dict, metric: str) -> float | None:
-    for key, value in payload.get("peaks", {}).items():
-        if key.startswith(metric):
-            return value
-    return None
+def server_gauge_in_window(payload: dict, metric: str, start_ns: int, end_ns: int):
+    """Median value of a gauge over the measured window.
+
+    Not the peak over the whole run: the warmup that precedes each run leaves
+    connections draining as measurement begins, so a peak can exceed the
+    configured connection count and make the tool look like it opened more than
+    it did. The median over the window describes what the tool actually held
+    while it was being measured.
+    """
+    values = [
+        value
+        for sample in payload["samples"]
+        if start_ns <= sample["unix_ns"] <= end_ns
+        for key, value in sample["metrics"].items()
+        if key.startswith(metric)
+    ]
+    if not values:
+        return None
+    return statistics.median(values)
 
 
 def fmt_ms(nanos: float | None) -> str:
@@ -377,24 +392,46 @@ def build_report(results_dir: Path) -> str:
         lines.append("")
 
     # --- Connection topology, the multiplexing evidence -----------------------
-    connection_rows = []
+    # Grouped across repeats: one row per tool and concurrency level, not one
+    # row per run, so the table shows the topology rather than the run list.
+    grouped_connections: dict[tuple, list[tuple[float, float | None]]] = {}
     for run in analysis["runs"]:
         payload = server_metrics.get(run_tag(run))
         if not payload:
             continue
-        peak_connections = server_peak(payload, "benchmark_server_connections_active")
-        peak_in_flight = server_peak(payload, "benchmark_server_rpcs_in_flight")
-        if peak_connections is None:
-            continue
-        connection_rows.append(
-            (
-                series_label(run["tool"], run["connections"], run["concurrency"]),
-                run["method"],
-                run["concurrency"],
-                peak_connections,
-                peak_in_flight,
-            )
+        connections = server_gauge_in_window(
+            payload,
+            "benchmark_server_connections_active",
+            run["window_start_ns"],
+            run["window_end_ns"],
         )
+        in_flight = server_gauge_in_window(
+            payload,
+            "benchmark_server_rpcs_in_flight",
+            run["window_start_ns"],
+            run["window_end_ns"],
+        )
+        if connections is None:
+            continue
+        key = (
+            series_label(run["tool"], run["connections"], run["concurrency"]),
+            run["method"],
+            run["concurrency"],
+        )
+        grouped_connections.setdefault(key, []).append((connections, in_flight))
+
+    connection_rows = [
+        (
+            label,
+            method,
+            concurrency,
+            statistics.median([c for c, _ in values]),
+            statistics.median([f for _, f in values if f is not None])
+            if any(f is not None for _, f in values)
+            else None,
+        )
+        for (label, method, concurrency), values in grouped_connections.items()
+    ]
 
     if connection_rows:
         lines.append("## Connections and in-flight RPCs, as counted by the server")
@@ -408,14 +445,18 @@ def build_report(results_dir: Path) -> str:
         )
         lines.append("")
         lines.append(
-            "| Tool | Method | Configured concurrency | Peak connections | Peak in-flight RPCs |"
+            "| Tool | Method | Configured concurrency | Connections held | RPCs in flight |"
         )
         lines.append("|---|---|---:|---:|---:|")
         for label, method, concurrency, connections, in_flight in sorted(connection_rows):
-            in_flight_cell = f"{in_flight:.0f}" if in_flight is not None else "n/a"
+            in_flight_cell = f"{in_flight:.1f}" if in_flight is not None else "n/a"
             lines.append(
-                f"| {label} | `{method}` | {concurrency} | {connections:.0f} | {in_flight_cell} |"
+                f"| {label} | `{method}` | {concurrency} | {connections:.1f} | {in_flight_cell} |"
             )
+        lines.append("")
+        lines.append(
+            "Both columns are medians over the measured window, across repeats."
+        )
         lines.append("")
 
     # --- Client/server agreement ---------------------------------------------
