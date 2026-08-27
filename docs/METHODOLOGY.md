@@ -82,9 +82,12 @@ argue with.
 ### 7. Repeats, shuffled order, and medians
 
 Each cell is run at least three times (five in the full profile). Tool order is
-shuffled within each round from a seed derived from the run id, so a machine
-that warms up or gets busier over a session does not systematically favour
-whichever tool always went first. Reported figures are medians with an
+shuffled per cell, from a seed mixing the run id with the cell's own
+coordinates, so a machine that warms up or gets busier over a session does not
+systematically favour whichever tool always went first. Seeding on the run id
+alone would have produced one permutation for the whole run, which is the same
+bias wearing a disguise; re-running the same run id still reproduces the same
+ordering. Reported figures are medians with an
 interquartile range, never a single run and never a mean — one GC pause should
 not move a headline number.
 (`test_median_not_mean_across_repeats`)

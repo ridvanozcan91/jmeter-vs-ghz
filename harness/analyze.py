@@ -12,8 +12,8 @@ Definitions used throughout, applied identically to both tools:
 window
     A request belongs to the measured window if it *completed* inside it. The
     server-side counter also increments on completion, so the client-side count
-    and the server-side count are directly comparable, and that agreement is
-    reported as ``window_agreement`` rather than assumed.
+    and the server-side count are directly comparable; ``report.py`` puts the
+    two side by side with their drift rather than assuming they agree.
 
 percentile
     Nearest-rank on the sorted latency array (``ceil(p/100 * n)``, 1-indexed).
