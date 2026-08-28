@@ -69,7 +69,9 @@ make test      # harness unit tests (standard library only, no pip install)
 make smoke     # proves the pipeline runs end to end
 ```
 
-Then, for real numbers, follow [docs/RUNBOOK.md](docs/RUNBOOK.md):
+Then, for real numbers, follow [docs/RUNBOOK.md](docs/RUNBOOK.md) — or
+[docs/OPENSHIFT.md](docs/OPENSHIFT.md) to run the same matrix in a single
+OpenShift namespace:
 
 ```bash
 export SUT_HOST=<the-other-machine>
@@ -100,8 +102,8 @@ sut/         Spring Boot 3 + grpc-spring-boot-starter, Java 21, with its own met
 loadgen/     one runner per tool, sharing a single workload definition
 harness/     normalize, analyze, report, orchestrate — the neutral core
 tools/       pinned installers for ghz and JMeter + plugin
-deploy/      Docker and Kubernetes (unvalidated; see deploy/README.md)
-docs/        methodology, architecture, tuning, runbook, findings
+deploy/      container images and OpenShift manifests (see deploy/README.md)
+docs/        methodology, architecture, tuning, runbook, OpenShift, findings
 results/     one directory per run: raw output, canonical records, manifest, report
 ```
 

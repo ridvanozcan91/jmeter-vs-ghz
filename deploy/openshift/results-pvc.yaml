@@ -1,0 +1,23 @@
+# Where a run's output lives.
+#
+# ghz emits a JSON object per request, so a full matrix produces hundreds of
+# megabytes of raw records. They are what makes every published number
+# recomputable, so they are kept rather than summarised in place — size the
+# claim for the profile you intend to run, not for the smoke test.
+#
+#   oc apply -f deploy/openshift/results-pvc.yaml
+#
+# No storageClassName: the namespace's default class is used. Set one explicitly
+# if your cluster has several and the default is not what you want.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: benchmark-results
+  labels:
+    app: benchmark-loadgen
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi

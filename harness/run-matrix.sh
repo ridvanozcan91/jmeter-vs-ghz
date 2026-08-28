@@ -48,9 +48,17 @@ JMETER_HOME="${JMETER_HOME:?JMETER_HOME must point at an Apache JMeter installat
 SUT_CPUS="${SUT_CPUS:-}"
 LOADGEN_CPUS="${LOADGEN_CPUS:-}"
 
-# How the SUT is (re)started between tools. Empty means "assume it is already
-# running and managed elsewhere", which is the two-machine case.
+# How the SUT is (re)started between tools. With no jar and no restart command
+# the server is assumed to be running and managed elsewhere, which is the
+# two-machine case.
+#
+# SUT_RESTART_CMD covers the cluster case, where the harness does not own the
+# JVM but can still ask for a fresh one -- see harness/k8s_restart_sut.py. It is
+# not a convenience: without a restart, the first tool to run in a cell warms the
+# server for the second, and the second inherits JIT compilation it did not pay
+# for.
 SUT_JAR="${SUT_JAR:-}"
+SUT_RESTART_CMD="${SUT_RESTART_CMD:-}"
 SUT_JVM_OPTS="${SUT_JVM_OPTS:--XX:+UseG1GC -Xms2g -Xmx4g}"
 SUT_PID=""
 
@@ -79,7 +87,18 @@ wait_for_sut() {
 }
 
 start_sut() {
-  [[ -z "${SUT_JAR}" ]] && { wait_for_sut; return; }
+  if [[ -z "${SUT_JAR}" ]]; then
+    if [[ -n "${SUT_RESTART_CMD}" ]]; then
+      log "restarting SUT via SUT_RESTART_CMD"
+      # A failed restart is reported but not fatal: losing the JIT isolation for
+      # one cell is worth less than losing the rest of a multi-hour matrix, and
+      # the log says which cells were affected.
+      bash -c "${SUT_RESTART_CMD}" >>"${RESULTS_DIR}/sut-restart.log" 2>&1 \
+        || log "WARNING: SUT restart command failed; see sut-restart.log"
+    fi
+    wait_for_sut
+    return
+  fi
   stop_sut
   log "starting SUT"
   # shellcheck disable=SC2086

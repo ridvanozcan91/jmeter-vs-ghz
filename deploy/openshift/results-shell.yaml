@@ -1,0 +1,64 @@
+# A pod that exists only to get results off the claim.
+#
+# `oc rsync` needs a running container to copy from, and a finished Job has
+# none. This mounts the same claim read-only and sleeps, so the records can be
+# pulled out after the matrix has completed:
+#
+#   oc process -f deploy/openshift/results-shell.yaml | oc apply -f -
+#   oc rsync benchmark-results-shell:/results/<run-id> ./results/
+#   oc delete pod benchmark-results-shell
+#
+# Read-only on purpose: nothing should be able to edit a run's raw records
+# between producing them and reading them.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: benchmark-results-shell
+  annotations:
+    description: Sleeping pod for copying benchmark results off the claim
+parameters:
+  - name: IMAGE
+    description: >-
+      Any image with a shell and tar, which is what oc rsync needs. Pass the
+      load generator image if your cluster cannot pull from the Red Hat registry
+      — it is already there, because the Job pulled it.
+    value: registry.access.redhat.com/ubi9/ubi-minimal:latest
+  - name: RESULTS_CLAIM
+    value: benchmark-results
+objects:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: benchmark-results-shell
+      labels:
+        app: benchmark-results-shell
+    spec:
+      # The claim is ReadWriteOnce. If the load generator Job is still running
+      # on another node, this pod stays Pending until it finishes — which is the
+      # correct behaviour, not a fault.
+      containers:
+        - name: shell
+          image: ${IMAGE}
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: results
+              mountPath: /results
+              readOnly: true
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: ${RESULTS_CLAIM}

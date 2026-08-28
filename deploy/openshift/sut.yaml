@@ -1,0 +1,113 @@
+# The System Under Test, as an OpenShift template.
+#
+#   oc process -f deploy/openshift/sut.yaml -p IMAGE=<ref> | oc apply -f -
+#
+# Parameterised rather than hardcoded because the one thing that always differs
+# between clusters is what a namespace is allowed to ask for. Check your quota
+# before applying:  oc describe quota && oc describe limitrange
+#
+# The SUT is deliberately given generous CPU. If the server saturates, the
+# benchmark measures the server rather than the load generators, which is the
+# one outcome that makes the whole exercise pointless.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: benchmark-sut
+  annotations:
+    description: gRPC System Under Test for the jmeter-vs-ghz benchmark
+parameters:
+  - name: IMAGE
+    description: Fully qualified image reference, ideally pinned by digest
+    required: true
+  - name: CPU
+    description: CPU request and limit. Must exceed what both load generators can drive.
+    value: "4"
+  - name: MEMORY
+    description: Memory request and limit. Must exceed HEAP plus JVM overhead.
+    value: 6Gi
+  - name: HEAP
+    description: JVM heap. Fixed Xms=Xmx so heap growth never lands inside a measured window.
+    value: "-XX:+UseG1GC -Xms4g -Xmx4g"
+objects:
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: benchmark-sut
+      labels:
+        app: benchmark-sut
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: benchmark-sut
+      # Recreate, not RollingUpdate: two SUT pods behind one Service during a
+      # restart would split the load across two JVMs with different JIT states,
+      # and the run that straddled the change would be unattributable.
+      strategy:
+        type: Recreate
+      template:
+        metadata:
+          labels:
+            app: benchmark-sut
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "9091"
+            prometheus.io/path: /actuator/prometheus
+        spec:
+          containers:
+            - name: sut
+              image: ${IMAGE}
+              ports:
+                - name: grpc
+                  containerPort: 9090
+                - name: management
+                  containerPort: 9091
+              env:
+                - name: JAVA_TOOL_OPTIONS
+                  value: ${HEAP}
+              resources:
+                # requests == limits: a Guaranteed QoS pod, so the server's CPU
+                # budget does not vary between runs or with what else the node
+                # happens to be doing.
+                requests:
+                  cpu: ${CPU}
+                  memory: ${MEMORY}
+                limits:
+                  cpu: ${CPU}
+                  memory: ${MEMORY}
+              readinessProbe:
+                httpGet:
+                  path: /actuator/health
+                  port: management
+                initialDelaySeconds: 10
+                periodSeconds: 5
+              # No liveness probe on purpose. Under a load level meant to find
+              # the server's ceiling, a probe timeout would restart the SUT
+              # mid-measurement and the run would silently become two runs.
+              securityContext:
+                # What the restricted-v2 SCC requires, spelled out so the same
+                # manifest also passes a restricted Pod Security admission on
+                # plain Kubernetes. runAsUser is deliberately absent: OpenShift
+                # assigns one from the namespace's range.
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: benchmark-sut
+      labels:
+        app: benchmark-sut
+    spec:
+      selector:
+        app: benchmark-sut
+      ports:
+        - name: grpc
+          port: 9090
+          targetPort: grpc
+        - name: management
+          port: 9091
+          targetPort: management

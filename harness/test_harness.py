@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import analyze  # noqa: E402
 import normalize  # noqa: E402
+import sample_proc  # noqa: E402
 
 
 class PercentileTest(unittest.TestCase):
@@ -273,6 +274,64 @@ class FamilySeparationTest(unittest.TestCase):
     def test_closed_loop_has_no_rate_attainment(self):
         result = analyze.aggregate([self._summary(0, 8000.0)])
         self.assertIsNone(result["rate_attainment_median"])
+
+
+class ContainerCpuAccountingTest(unittest.TestCase):
+    """A throttled load generator must not be reported as a saturated one.
+
+    In a container /proc reports the node's cores, so a tool pinned at its cgroup
+    quota looks exactly like a tool that ran out of work it could do. These pin
+    down the difference, which is what the report's throttling banner is read
+    from.
+    """
+
+    @staticmethod
+    def _samples(cpu_seconds: list[float], stats: list[dict | None]) -> list[dict]:
+        return [
+            {
+                "monotonic": float(index),
+                "cpu_seconds": cpu,
+                "threads": 1,
+                "rss_bytes": 0,
+                "sockets": 0,
+                "process_count": 1,
+                "cgroup_cpu_stat": stat,
+            }
+            for index, (cpu, stat) in enumerate(zip(cpu_seconds, stats))
+        ]
+
+    def _with_limit(self, limit, samples):
+        original = sample_proc.read_cgroup_cpu_limit
+        sample_proc.read_cgroup_cpu_limit = lambda: limit
+        try:
+            return sample_proc.summarize(samples)
+        finally:
+            sample_proc.read_cgroup_cpu_limit = original
+
+    def test_throttled_periods_are_reported_as_a_fraction_of_the_window(self):
+        stats = [
+            {"nr_periods": 1000, "nr_throttled": 100, "throttled_seconds": 1.0},
+            {"nr_periods": 1100, "nr_throttled": 160, "throttled_seconds": 3.5},
+        ]
+        # Deltas, not totals: the counters are cumulative for the life of the
+        # container, so a total would charge this run for every run before it.
+        summary = self._with_limit(4.0, self._samples([0.0, 8.0], stats))
+        self.assertAlmostEqual(summary["throttled_periods_fraction"], 0.6)
+        self.assertAlmostEqual(summary["throttled_seconds"], 2.5)
+
+    def test_utilization_is_measured_against_the_quota_not_the_node(self):
+        stats = [{"nr_periods": 10, "nr_throttled": 0, "throttled_seconds": 0.0}] * 2
+        summary = self._with_limit(2.0, self._samples([0.0, 2.0], stats))
+        self.assertAlmostEqual(summary["cpu_cores_used"], 2.0)
+        self.assertAlmostEqual(summary["cpu_utilization_of_limit"], 1.0)
+
+    def test_no_cgroup_limit_leaves_the_fields_empty_rather_than_zero(self):
+        # A zero would render as "not throttled" in the report; None renders as
+        # "not measured", which is the truth outside a container.
+        summary = self._with_limit(None, self._samples([0.0, 1.0], [None, None]))
+        self.assertIsNone(summary["cpu_limit_cores"])
+        self.assertIsNone(summary["cpu_utilization_of_limit"])
+        self.assertIsNone(summary["throttled_periods_fraction"])
 
 
 if __name__ == "__main__":

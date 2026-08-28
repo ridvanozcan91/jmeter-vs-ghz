@@ -82,9 +82,11 @@ export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
 harness/run-matrix.sh --profile full --family all
 ```
 
-Leave `SUT_JAR` unset: with the server on another machine the harness cannot
-restart it, so restart it yourself between tools if you want the strictest
-isolation, or accept the shared warmup and note it.
+Leave `SUT_JAR` unset: the harness only starts a JVM it owns. To keep the
+between-tools restart on a two-machine setup, give it a command that does the
+restart remotely — `SUT_RESTART_CMD="ssh machine-A systemctl restart benchmark-sut"`,
+say — and the harness will run it and wait for health before each tool. Without
+one, accept the shared warmup and note it.
 
 Leave `SUT_CPUS` and `LOADGEN_CPUS` unset too — CPU pinning exists for the
 single-host case.
@@ -132,16 +134,28 @@ Work through these; each one has caught a bad run:
 - **IQR small relative to the median.** Wide spread means a noisy machine.
   Re-run on an idle host before reporting.
 
-## Kubernetes
+## OpenShift and Kubernetes
 
-`deploy/k8s/` holds manifests for running the SUT as a Deployment and the load
-generators as Jobs, with anti-affinity so they never land on the same node and
-explicit resource limits so each gets a known CPU budget.
+[OPENSHIFT.md](OPENSHIFT.md) is the cluster procedure: build and push two
+images, run the SUT as a Deployment and the matrix as a single Job, with
+anti-affinity so they never share a node and explicit CPU limits so each side
+has a known budget. It is written for a single namespace with no cluster-admin
+rights, and the manifests in `deploy/openshift/` render to plain Kubernetes
+objects for non-OpenShift clusters.
 
-> These manifests are **not validated** — the environment this repository was
-> developed in had no Docker daemon and no cluster, so they were never applied.
-> Treat them as a starting point and verify before trusting results from them.
-> The native two-machine path above is the one that has been exercised.
+A cluster solves the problem this runbook exists for — the two sides stop
+sharing CPU — and introduces its own: the nodes are shared with other
+workloads, and CPU limits throttle rather than pin. The harness records both
+node names and the cgroup throttling counters for every run, and the report
+refuses to present a run as authoritative when the pods shared a node or the
+load generator hit its quota.
+
+> Both images have been built and the smoke matrix has run between two
+> containers as an arbitrary UID, which is what the restricted SCC imposes.
+> Nothing cluster-side — templates, RBAC, anti-affinity, the claim — has been
+> applied from this repository's development environment, which has no cluster.
+> See `deploy/README.md` for exactly what was and was not exercised, and run the
+> preflight in OPENSHIFT.md before a long run.
 
 ## Single-host runs
 

@@ -27,6 +27,10 @@ COLOR_GHZ_ALT = "#457b9d"
 COLOR_AXIS = "#8a8f98"
 COLOR_TEXT = "#8a8f98"
 
+# Above this share of throttled scheduling periods, a run's client-CPU figure
+# describes the cgroup quota rather than the tool, and the report says so.
+THROTTLE_WARN_FRACTION = 0.02
+
 
 def series_color(tool: str, connections: int, concurrency: int) -> str:
     if tool.startswith("jmeter"):
@@ -235,6 +239,40 @@ def build_report(results_dir: Path) -> str:
     target = manifest.get("target", {})
     tools = manifest.get("tools", {})
 
+    throttled = [
+        (tag, summary)
+        for tag, summary in sorted(resources.items())
+        if (summary.get("throttled_periods_fraction") or 0.0) > THROTTLE_WARN_FRACTION
+    ]
+    if throttled:
+        worst_tag, worst = max(
+            throttled, key=lambda item: item[1]["throttled_periods_fraction"]
+        )
+        lines.append(
+            "> **The load generator was CPU-throttled.** "
+            f"{len(throttled)} run(s) hit their cgroup CPU quota; the worst, "
+            f"`{worst_tag}`, was throttled in "
+            f"{worst['throttled_periods_fraction'] * 100:.0f}% of scheduling "
+            "periods. A throttled tool reports the quota's ceiling, not its own, "
+            "so any run above is a measurement of the limit rather than of the "
+            "tool. Raise the load generator's CPU limit and rerun before "
+            "comparing these figures."
+        )
+        lines.append("")
+
+    node = host.get("node_name") or ""
+    sut_node = host.get("sut_node_name") or ""
+    if node and sut_node and node == sut_node:
+        lines.append(
+            "> **The load generator and the SUT ran on the same node "
+            f"(`{node}`).** Separate pods on one node still share its CPUs, "
+            "cache and memory bandwidth, so the tool that costs more client CPU "
+            "is charged for it twice. The anti-affinity rule did not take "
+            "effect; see `docs/OPENSHIFT.md`. Treat the ordering as meaningful "
+            "and the magnitudes as not."
+        )
+        lines.append("")
+
     if target.get("same_host_as_loadgen"):
         lines.append(
             "> **These numbers are directional, not authoritative.** The load "
@@ -254,11 +292,29 @@ def build_report(results_dir: Path) -> str:
     lines.append(f"| Commit | `{manifest.get('git', {}).get('commit', 'unknown')}` |")
     lines.append(f"| CPU | {host.get('cpu_model', 'unknown')} ({host.get('cpu_count', '?')} cores) |")
     lines.append(f"| Kernel | {host.get('kernel', 'unknown')} |")
+    cpu_limits = {
+        summary["cpu_limit_cores"]
+        for summary in resources.values()
+        if summary.get("cpu_limit_cores")
+    }
+    if cpu_limits:
+        lines.append(
+            "| Load generator CPU limit | "
+            + ", ".join(f"{limit:g} cores" for limit in sorted(cpu_limits))
+            + " (cgroup quota) |"
+        )
+    if host.get("node_name") or host.get("sut_node_name"):
+        lines.append(
+            f"| Nodes | load generator `{host.get('node_name') or 'unknown'}`, "
+            f"SUT `{host.get('sut_node_name') or 'unknown'}` |"
+        )
     lines.append(f"| Java | {tools.get('java', 'unknown')} |")
     lines.append(f"| ghz | {tools.get('ghz', 'unknown')} |")
     lines.append(
         f"| JMeter plugin sha256 | `{tools.get('jmeter_plugin_sha256', 'unknown')[:16]}…` |"
     )
+    if tools.get("loadgen_image"):
+        lines.append(f"| Load generator image | `{tools['loadgen_image']}` |")
     lines.append(
         f"| Window | {analysis['window']['warmup_seconds']:g}s warmup, "
         f"{analysis['window']['measure_seconds']:g}s measured |"

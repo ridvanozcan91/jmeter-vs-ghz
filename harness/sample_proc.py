@@ -93,6 +93,69 @@ def read_process_stat(pid: int) -> dict | None:
     }
 
 
+def read_cgroup_cpu_limit() -> float | None:
+    """The container's CPU limit in cores, or None when it is unlimited.
+
+    In a container ``nproc`` reports the node's cores, not the pod's budget, so
+    it cannot say whether the load generator had room left. The cgroup does.
+    Both hierarchies are read because a run may land on either.
+    """
+    v2 = Path("/sys/fs/cgroup/cpu.max")
+    if v2.exists():
+        try:
+            quota, period = v2.read_text().split()
+        except (OSError, ValueError):
+            return None
+        if quota == "max":
+            return None
+        return int(quota) / int(period)
+
+    quota_file = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+    period_file = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+    if quota_file.exists() and period_file.exists():
+        try:
+            quota = int(quota_file.read_text().strip())
+            period = int(period_file.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        if quota <= 0 or period <= 0:
+            return None
+        return quota / period
+    return None
+
+
+def read_cgroup_cpu_stat() -> dict | None:
+    """Cumulative CFS throttling counters, or None outside a limited cgroup.
+
+    A throttled load generator looks identical to a saturated one in /proc: both
+    report their CPU pegged at a ceiling. Only these counters distinguish "the
+    tool ran out of work it could do" from "the scheduler took the core away",
+    and confusing the two turns a quota setting into a finding about a tool.
+    """
+    for path, scale in (
+        (Path("/sys/fs/cgroup/cpu.stat"), 1e-6),          # v2: throttled_usec
+        (Path("/sys/fs/cgroup/cpu/cpu.stat"), 1e-9),      # v1: throttled_time (ns)
+    ):
+        if not path.exists():
+            continue
+        values = {}
+        try:
+            for line in path.read_text().splitlines():
+                key, _, value = line.partition(" ")
+                values[key] = int(value)
+        except (OSError, ValueError):
+            return None
+        if "nr_periods" not in values:
+            continue
+        throttled = values.get("throttled_usec", values.get("throttled_time", 0))
+        return {
+            "nr_periods": values["nr_periods"],
+            "nr_throttled": values.get("nr_throttled", 0),
+            "throttled_seconds": throttled * scale,
+        }
+    return None
+
+
 def read_system_cpu_seconds() -> float:
     """Total busy CPU seconds across all cores, for context on the sample."""
     fields = Path("/proc/stat").read_text().split("\n")[0].split()[1:]
@@ -145,6 +208,7 @@ def sample(pid: int, interval: float, output: Path) -> int:
                 "sockets": sum(open_socket_count(child) for child in tree),
                 "process_count": len(stats),
                 "system_cpu_seconds": read_system_cpu_seconds(),
+                "cgroup_cpu_stat": read_cgroup_cpu_stat(),
             }
         )
         time.sleep(interval)
@@ -166,7 +230,7 @@ def summarize(samples: list[dict]) -> dict:
         return {"usable": False, "reason": "zero-length sampling window"}
 
     cpu_seconds = last["cpu_seconds"] - first["cpu_seconds"]
-    return {
+    summary = {
         "usable": True,
         "wall_seconds": wall_seconds,
         "cpu_seconds": cpu_seconds,
@@ -179,6 +243,39 @@ def summarize(samples: list[dict]) -> dict:
         "process_count_max": max(s.get("process_count", 1) for s in samples),
         "sample_count": len(samples),
     }
+    summary.update(summarize_cgroup(samples, wall_seconds, cpu_seconds))
+    return summary
+
+
+def summarize_cgroup(samples: list[dict], wall_seconds: float, cpu_seconds: float) -> dict:
+    """Reduce the cgroup counters to what makes a container run interpretable.
+
+    Outside a container every field here is None, and the report says nothing
+    about limits it did not find. Inside one, ``cpu_utilization_of_limit`` near
+    1.0 with a non-zero throttled fraction means the ceiling reported for that
+    tool is the quota's, not the tool's.
+    """
+    limit = read_cgroup_cpu_limit()
+    result = {
+        "cpu_limit_cores": limit,
+        "cpu_utilization_of_limit": (cpu_seconds / wall_seconds / limit) if limit else None,
+        "throttled_periods_fraction": None,
+        "throttled_seconds": None,
+    }
+
+    first_stat = samples[0].get("cgroup_cpu_stat")
+    last_stat = samples[-1].get("cgroup_cpu_stat")
+    if not first_stat or not last_stat:
+        return result
+
+    periods = last_stat["nr_periods"] - first_stat["nr_periods"]
+    throttled = last_stat["nr_throttled"] - first_stat["nr_throttled"]
+    if periods > 0:
+        result["throttled_periods_fraction"] = throttled / periods
+    result["throttled_seconds"] = (
+        last_stat["throttled_seconds"] - first_stat["throttled_seconds"]
+    )
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

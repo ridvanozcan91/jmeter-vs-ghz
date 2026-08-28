@@ -1,4 +1,8 @@
-# Untested: written in an environment with no Docker daemon. See deploy/README.md.
+# The System Under Test.
+#
+# Runs as an unprivileged user with no assumptions about which one: OpenShift
+# assigns an arbitrary UID from the namespace's range and puts it in group 0, so
+# everything the process needs is group-0 readable. See docs/OPENSHIFT.md.
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /src
 COPY proto/ proto/
@@ -14,5 +18,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/sut/target/benchmark-sut-1.0.0.jar app.jar
+
+# Group 0 with the owner's permissions: the container's UID is not known at
+# build time, only that it will be in that group.
+RUN chgrp -R 0 /app && chmod -R g=u /app
+
+ENV HOME=/app
 EXPOSE 9090 9091
+USER 1001
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
